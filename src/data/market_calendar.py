@@ -37,10 +37,18 @@ def complete_bar_cutoff(asset_type, now=None):
 
 
 def drop_incomplete_bars(df, asset_type, now=None, date_col='timestamp'):
-    """Return only the rows whose bar is complete (see `complete_bar_cutoff`)."""
+    """
+    Return only the rows whose bar is complete (see `complete_bar_cutoff`).
+    Futures / US-market series also lose weekend-dated rows: Globex reopens on Sunday at 18:00 ET and Yahoo dates that
+    still-running session (which belongs to Monday's trading day) on the Sunday — after 17:15 ET on a Sunday the cutoff rule
+    alone would accept it as a finished bar. No exchange-traded daily bar is ever complete on a Saturday or Sunday.
+    """
     cutoff = complete_bar_cutoff(asset_type, now)
-    dates = pd.to_datetime(df[date_col]).dt.date
-    return df[dates < cutoff].copy()
+    ts = pd.to_datetime(df[date_col])
+    keep = ts.dt.date < cutoff
+    if asset_type != 'crypto':
+        keep &= ts.dt.dayofweek < 5
+    return df[keep.values].copy()
 
 
 def next_trading_day(asset_type, date):

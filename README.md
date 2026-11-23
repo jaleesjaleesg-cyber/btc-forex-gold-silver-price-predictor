@@ -83,6 +83,21 @@ served — choosing it now would be test-set selection.
 73.8 % vs 60.6 %, lower QLIKE). On the test set this did **not** hold: coverage 74.4 % vs 65.7 % for the old EWMA band (nominal 68.3 %)
 and slightly worse QLIKE. EWMA stayed for Gold and Silver.
 
+### What the dashboard shows — a guided page
+
+The **Today** tab is one guided page; each numbered section answers one question, and the details sit in expandable sections:
+① market snapshot (price, 3-month trend, typical daily move) · ② tomorrow's forecast (price, UP / DOWN, the 68 % likely range and a
+*signal strength* label: *weak* when the predicted move is below 0.25 × the typical daily move σ_t, a fixed rule of thumb) ·
+③ market risk — LOW / NORMAL / HIGH for the next 5 trading days from the served volatility forecast (thresholds fixed on the training
+period), with "did the warning work?" over the last 90 days (`src/inference/risk_view.py`) · ④ how much to trust it (direction hit-rate,
+comparison with "tomorrow = today", range coverage, with the full tables on request) · ⑤ the price chart with the forecast and its range.
+The other tabs are **Test a Past Day**, **How Accurate Is It?** (short answer first, full results for examiners in expandable sections)
+and **How It Works** (method and limitations). All text is plain English; technical terms are explained where they appear.
+
+During the September–November 2026 metals sell-off (gold −21 %, silver −38 % from their peaks), the return models still leaned UP on
+every day, but the risk banner was HIGH for gold and silver throughout, and all 5 of each metal's largest moves came on days flagged HIGH.
+For Bitcoin the warning did not flag its largest moves; the chart shows this too.
+
 ## Project structure
 
 ```
@@ -113,6 +128,7 @@ and slightly worse QLIKE. EWMA stayed for Gold and Silver.
 │   │   ├── cross_validation.py  expanding-window folds
 │   │   ├── backtesting.py       ONE evaluation on the test set (every model + the Combined forecast), CV comparison, pooled walk-forward tests, band calibration, results tables
 │   │   └── plots.py             report figures
+│   ├── inference/risk_view.py   risk banner, UP/DOWN signal strength, trend line, risk track record
 │   ├── inference/prediction.py  next-day prediction (Combined = mean of all trained models, calibrated 68 % EWMA-volatility band), predict-for-date demo
 │   ├── api/app.py               FastAPI
 │   └── utils/                   metrics (DM test, directional accuracy, backtest), reconstruction, seeds, logging

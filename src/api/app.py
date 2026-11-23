@@ -46,7 +46,9 @@ class PredictionResponse(BaseModel):
     current_price: float
     predicted_price: float
     predicted_return_pct: float
-    direction: str
+    direction: str                                       # UP / DOWN: sign of the predicted return
+    direction_strength: Optional[Dict[str, Any]] = None  # how strong the UP / DOWN call is (predicted move vs one day's typical move)
+    trend: Optional[Dict[str, Any]] = None               # description of the last ~3 months (not a forecast)
     model_used: str
     is_served_model: bool
     cv_selected_model: Optional[str] = None

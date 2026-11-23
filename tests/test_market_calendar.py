@@ -20,6 +20,15 @@ def test_drop_incomplete_bars_removes_todays_running_row():
     assert list(kept['timestamp'].dt.date) == [dt.date(2026, 9, 12)]
 
 
+def test_sunday_evening_futures_bar_is_not_a_close():
+    """Sunday 23:37 ET: Globex has reopened and Yahoo returns a running bar dated Sunday — it must be dropped (crypto keeps Sundays)."""
+    df = pd.DataFrame({'timestamp': pd.to_datetime(['2026-11-19', '2026-11-20', '2026-11-22']), 'price': [3685.5, 3515.4, 3608.0]})
+    sunday_night = dt.datetime(2026, 11, 23, 4, 37, tzinfo=dt.timezone.utc)      # 23:37 ET on Sunday 2026-11-22
+    kept = drop_incomplete_bars(df, 'commodity', sunday_night)
+    assert list(kept['timestamp'].dt.date) == [dt.date(2026, 11, 19), dt.date(2026, 11, 20)]
+    assert list(drop_incomplete_bars(df, 'crypto', sunday_night)['timestamp'].dt.date)[-1] == dt.date(2026, 11, 22)
+
+
 def test_next_trading_day_skips_weekend_for_futures_only():
     assert next_trading_day('crypto', '2026-09-11') == dt.date(2026, 9, 12)       # Saturday: crypto trades
     assert next_trading_day('commodity', '2026-09-11') == dt.date(2026, 9, 14)    # Monday

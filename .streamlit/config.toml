@@ -6,3 +6,5 @@ headless = true
 # The app's CSS paints a dark background (#0E1117); without a fixed dark base theme a browser in light mode renders
 # Streamlit's dark-grey text on that dark background and most headings and captions become unreadable.
 base = "dark"
+# Accent colour for buttons, tabs and sliders: the app's neutral teal. Red and green are reserved for meaning (risk, price down / up).
+primaryColor = "#00B3A1"

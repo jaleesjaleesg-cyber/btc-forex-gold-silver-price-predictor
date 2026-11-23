@@ -46,9 +46,9 @@ from src.utils.logging_config import get_logger
 
 logger = get_logger(__name__)
 
-DISCLAIMER = ("Research prototype for an academic project. Next-day financial returns are close to unpredictable: "
-              "read every forecast together with the held-out test metrics shown next to it (error size, direction "
-              "hit-rate and the comparison with the random-walk forecast). This output is NOT financial advice.")
+DISCLAIMER = ("This is a research prototype built for a university final-year project — it is NOT financial advice. Next-day price "
+              "moves are very hard to predict: always read a forecast together with its test results shown next to it (the size of its "
+              "errors, how often it got the direction right, and how it compares with the simple guess \"tomorrow's price = today's price\").")
 
 COMBINED = 'Combined'
 BASE_MODELS = list(TABULAR) + list(RECURRENT)          # the members of the combined forecast, if trained
@@ -209,12 +209,17 @@ def predict_next_day(asset, model_name=COMBINED):
     ctx = _context(asset, model_name, status)
     live = _features_path(asset).endswith('_live_features.csv')
     vol, vol_err = forecast_volatility_safe(asset, feats, as_of, live, (Xseq, Xt))
+    from src.inference.risk_view import direction_strength, market_trend    # (risk_view imports this module)
+    band = _band(asset, feats, as_of, last_close, r_hat, _band_k(status))
     result = {
         'asset': asset, 'as_of_date': str(as_of.date()), 'current_price': last_close,
         'target_date': str(next_trading_day(ASSET_CONFIG[asset]['type'], as_of)),
         'predicted_price': float(pred_price), 'predicted_return_pct': r_hat * 100,
+        # 'direction' = the sign of r̂ (UP / DOWN); 'direction_strength' = how large that predicted move is next to one day's
+        # typical move σ_t (weak below 0.25×, src/inference/risk_view.py)
         'direction': 'UP' if r_hat > 0 else 'DOWN', 'n_features': len(cols),
-        **_band(asset, feats, as_of, last_close, r_hat, _band_k(status)), 'band_calibration': status.get('band'),
+        'direction_strength': direction_strength(r_hat, band['band_sigma_pct'] / 100), 'trend': market_trend(feats),
+        **band, 'band_calibration': status.get('band'),
         'data_source': 'live download' if _features_path(asset).endswith('_live_features.csv') else 'stored dataset',
         # False when a newer complete bar should already exist (sync the live data first): the forecast is then for an older day
         'data_is_current': bool(as_of.date() >= expected_last_complete_bar(ASSET_CONFIG[asset]['type'])),
