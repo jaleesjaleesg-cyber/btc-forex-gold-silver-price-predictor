@@ -7,7 +7,8 @@ The user never chooses a model: every trained model runs automatically and their
 
 Layout — a guided page: each section answers one question, details sit in expanders
   1 Today                   ① market snapshot (3 numbers) · ② tomorrow's forecast (price, UP/DOWN, likely range, signal strength)
-                            · ③ market risk (risk level from src/inference/risk_view.py + "did the warning work?") · ④ how much to trust it
+                            · ③ market risk (tested risk warning from src/risk/warning.py: level, chance of a big move / fall, bad-week loss,
+                            its test record) · ④ how much to trust it
                             (3 numbers + verdict; full table and per-model check in expanders) · ⑤ price chart (forecast + range, optional
                             indicators) · where to go next
   2 Test a Past Day         pick a day the models never saw, forecast it, reveal the real price and the error
@@ -34,7 +35,9 @@ from config import (PROCESSED_DATA_DIR, RESULTS_DIR, FIGURES_DIR, PREDICTION_HOR
 from src.inference.prediction import (predict_next_day, predict_for_date, prediction_history, combined_members, live_data_is_current,
                                       recent_track_record,
                                       COMBINED, DISCLAIMER)
-from src.inference.risk_view import risk_now, risk_track_record, WEAK_SIGNAL_BELOW
+from src.inference.risk_view import risk_now, WEAK_SIGNAL_BELOW
+from src.inference.prediction import load_features as load_feature_frame
+from src.risk.warning import risk_warning, warning_history
 from src.data.market_calendar import expected_last_complete_bar
 from src.models.registry import ROLLING_BASELINES
 from src.data.sync_live_data import update_live_data
@@ -80,8 +83,11 @@ st.markdown("""
   .risk .head { font-size: 1.45rem; font-weight: 700; font-family: 'Inter', sans-serif; }
   .risk .sub { color: #A0A4AB; font-size: 0.8rem; }
   .risk-high { background: #2A1215; border: 1px solid #FF5252; } .risk-high .head { color: #FF6B6B; }
-  .risk-normal { background: #2A2412; border: 1px solid #F1C40F; } .risk-normal .head { color: #F5D547; }
+  .risk-normal { background: #10241C; border: 1px solid #2E7D5B; } .risk-normal .head { color: #6FCF97; }
   .risk-low { background: #0F2A1E; border: 1px solid #2ECC71; } .risk-low .head { color: #2ECC71; }
+  .risk-moderate { background: #2A2412; border: 1px solid #F1C40F; } .risk-moderate .head { color: #F5D547; }
+  .risk-extreme { background: #3A0C10; border: 2px solid #FF1744; } .risk-extreme .head { color: #FF5252; }
+  .unc { margin-top: 0.45rem; padding: 0.35rem 0.6rem; border-radius: 6px; background: #241B33; border: 1px solid #8E7CC3; color: #DCD3F2; font-size: 0.88rem; }
   .risk-na { background: #161B24; border: 1px solid #262C38; } .risk-na .head { color: #D6D9DE; }
   .footer { color: #8A8F98; font-size: 0.8rem; margin-top: 2rem; border-top: 1px solid #262C38; padding-top: 0.6rem; }
 </style>""", unsafe_allow_html=True)
@@ -132,9 +138,15 @@ def cached_risk_now(asset: str, stamp: float):
     return risk_now(asset)
 
 
-@st.cache_data(ttl=600)
-def cached_risk_track(asset: str, stamp: float, n_days: int):
-    return risk_track_record(asset, n_days)
+@st.cache_data(ttl=600, show_spinner=False)
+def cached_risk_warning(asset: str, stamp: float):
+    """The tested risk warning for the latest day (src/risk/warning.py)."""
+    return risk_warning(asset, load_feature_frame(asset))
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def cached_warning_history(asset: str, stamp: float, n_days: int):
+    return warning_history(asset, load_feature_frame(asset), n_days)
 
 
 @st.cache_data(ttl=600, show_spinner=False)
@@ -361,85 +373,79 @@ with tab_fc:
                 st.caption(f"{n_up_} of {len(ind)} models say UP. The forecast above is the plain average of these {len(ind)} models. "
                            "To see how each model did on recent days, open \"What does each model say — and how did it do lately?\" in ④.")
 
-        # ── ③ market risk
-        section(3, "Market risk", "Is anything unusual happening? How big could the next moves be?")
-        v = rk['volatility'] if rk else None
-        if rk is None:
-            st.info("The risk level is not available right now.")
-        elif v is None:
-            st.markdown(f"<div class='risk risk-na'><div class='head'>Risk level not available</div>Some data is missing. "
-                        f"Press <b>Get latest prices</b>.<div class='sub'>Details: {rk['volatility_unavailable_reason'] or 'no volatility model'}</div></div>",
-                        unsafe_allow_html=True)
-        else:
-            reg = v['regime']
-            head = {'high': "⚠ HIGH RISK", 'normal': "NORMAL RISK", 'low': "LOW RISK"}[reg]
-            meaning = {'high': f"{asset}'s price may jump a lot in the next few days. It could go up or down — we don't know which.",
-                       'normal': f"{asset}'s price should move a normal amount in the next few days. Up or down — we don't know which.",
-                       'low': f"{asset}'s price should be calmer than usual in the next few days. Up or down — we don't know which."}[reg]
-            st.markdown(
-                f"<div class='risk risk-{reg}'><div class='head'>{head}</div>{meaning}<br>"
-                f"Normal day: ±{v['train_median_daily_vol_pct']:.2f}%. Expected now: <b>±{v['daily_vol_pct']:.2f}% a day</b> "
-                f"({rk['times_normal']:.1f}× {'bigger' if rk['times_normal'] >= 1 else 'the normal size'}), "
-                f"about ±{v['five_day_vol_pct']:.1f}% over the next {v['horizon_days']} trading days."
-                f"<div class='sub'>Based on the price of {rk['as_of_date']}. Risk levels compare the forecast with {asset}'s normal price swings "
-                f"in 2018–2025.</div></div>", unsafe_allow_html=True)
-            t_ = v['test']
-            method_txt = {'Ridge': 'Ridge model', 'HAR-IV': 'HAR model + gold fear index (GVZ)', 'HAR': 'HAR model',
-                          'EWMA': 'average of recent price swings (EWMA)', 'LightGBM': 'LightGBM', 'CatBoost': 'CatBoost',
-                          'Persistence': "copy of the last 5 days"}.get(v['method'], v['method'])
-            vt_ = t_.get('RMSE_vs_ref_pct_vs_persistence')
-            if v['is_ml'] and vt_ is not None:
-                st.caption(f"Made by the **{method_txt}**. In tests on {t_['n']} new days it was **{abs(vt_):.0f}% better** than just copying "
-                           "the last 5 days. We can't guess up or down, but we can guess how big the moves will be.")
-            else:
-                st.caption(f"Made by a simple rule: **{method_txt}**. No model did better for {asset}."
-                           + (f" In tests it was {abs(vt_):.1f}% {'better' if vt_ < 0 else 'worse'} than copying the last 5 days." if vt_ is not None else ""))
+        # ── ③ market risk — the tested risk warning (src/risk/warning.py, results/risk_warning/)
+        section(3, "Market risk", "Is anything unusual happening? How likely is a big move — up or down?")
         try:
-            rt = cached_risk_track(asset, _data_stamp(asset), 90)
+            rw = cached_risk_warning(asset, _data_stamp(asset))
         except Exception as e:
-            rt = None
-            st.caption(f"The risk warning record is not available right now ({e}).")
-        if rt and rt.get('n_days'):
-            n_big_high = sum(b['regime'] == 'high' for b in rt['biggest'])
-            st.markdown(f"**Did the warning work?** In the last {rt['n_days']} days, **{n_big_high} of the 5 biggest moves** happened on days "
-                        "marked HIGH RISK.")
-            with st.expander("See the risk record — last 90 days"):
-                dd = rt['days'].dropna(subset=['forecast_pct'])
-                frk = go.Figure()
-                hi = (dd['regime'] == 'high').values                 # shade the days the forecast (made the day before) said HIGH
-                runs, start = [], None
-                for j, h in enumerate(hi):
-                    if h and start is None:
-                        start = j
-                    if (not h or j == len(hi) - 1) and start is not None:
-                        end = j if h else j - 1
-                        runs.append((dd['target_date'].iloc[start], dd['target_date'].iloc[end]))
-                        start = None
-                for x0, x1 in runs:
-                    frk.add_vrect(x0=x0 - pd.Timedelta(hours=12), x1=x1 + pd.Timedelta(hours=12), fillcolor=RISK_HIGH, opacity=0.08, line_width=0)
-                frk.add_trace(go.Bar(x=dd['target_date'], y=dd['move_pct'], name='real daily move (up = green, down = red)',
-                                     marker_color=np.where(dd['move_pct'] >= 0, UP_COL, DOWN_COL)))
-                for sgn in (1, -1):
-                    frk.add_trace(go.Scatter(x=dd['target_date'], y=sgn * dd['forecast_pct'], mode='lines', name='risk forecast (± expected move)',
-                                             line=dict(color=ACCENT, width=2), showlegend=sgn == 1))
-                    frk.add_trace(go.Scatter(x=dd['target_date'], y=sgn * dd['normal_pct'], mode='lines', name=f'normal for {asset}',
-                                             line=dict(color=NAIVE, width=1, dash='dot'), showlegend=sgn == 1))
-                frk.update_yaxes(ticksuffix='%', title_text='daily price move (%)')
-                frk.update_xaxes(title_text='date')
-                st.plotly_chart(layout(frk, 340, "Real daily moves vs the risk forecast made the day before"), use_container_width=True)
-                st.caption("**What this shows:** bars are the real daily moves; the blue lines are how big we expected them to be; "
-                           "light red shading marks days we called HIGH RISK. **What to take from it:** when the lines widen, the bars usually "
-                           "get bigger too — the warning tracks the size of moves, not their direction.")
-                k1, k2, k3, k4 = st.columns(4)
-                k1.metric("Expected daily move (average)", f"±{rt['mean_forecast_pct']:.2f}%")
-                k2.metric("Real typical daily move", f"±{rt['actual_rms_move_pct']:.2f}%", help="The typical size of the real daily moves (root-mean-square).")
-                k3.metric("Days within the expected move", f"{rt['within_forecast_pct']:.0f}%",
-                          help="About 68% means the forecast had the right size.")
-                k4.metric("Days marked HIGH RISK", f"{rt['n_high']} of {rt['n_days']}")
-                big_txt = '; '.join(f"{b['target_date']} **{b['move_pct']:+.1f}%** (marked {b['regime'].upper()})" for b in rt['biggest'])
-                st.markdown(f"**Biggest 5 moves:** {big_txt}.")
-                st.caption(f"Each forecast used only older data. It cannot tell up or down, or the exact day — single shock days were up to "
-                           f"{rt['max_move_vs_forecast']:.1f}× the expected move.")
+            rw = None
+            st.info(f"The risk warning is not available right now ({e}). Run `make risk-warning` to create it.")
+        if rw is not None:
+            lvl = rw['level']
+            head = {'NORMAL': "● NORMAL RISK", 'MODERATE': "● MODERATE RISK", 'HIGH': "⚠ HIGH RISK", 'EXTREME': "⚠ EXTREME RISK"}[lvl]
+            meaning = {'NORMAL': f"Nothing unusual. A big price move for {asset} is about as likely as usual.",
+                       'MODERATE': f"Risk is rising. A big price move for {asset} is a bit more likely than usual — up or down.",
+                       'HIGH': f"A big price move for {asset} is clearly more likely than usual. It could go up or down — we don't know which.",
+                       'EXTREME': f"Very unusual risk. A big price move for {asset} is much more likely than usual — up or down."}[lvl]
+            unc = (f"<div class='unc'>⚠ HIGH UNCERTAINTY — the price surprised our risk model on {rw['breaches20']} of the last 20 days "
+                   "(about 1 is normal). Treat today's numbers with extra caution.</div>" if rw['uncertain'] else "")
+            st.markdown(
+                f"<div class='risk risk-{lvl.lower()}'><div class='head'>{head}</div>{meaning}<br>"
+                f"Chance of a <b>big move in the next 5 days</b>: <b>{rw['p_big5'] * 100:.0f}%</b> (usual: {rw['base5'] * 100:.0f}%). "
+                f"Chance of a <b>big fall</b>: {rw['p_down5'] * 100:.0f}%.<br>"
+                f"<span style='font-size:0.88rem'>A big move here means more than ±{rw['big_move_threshold_5d_pct']:.1f}% in 5 days. "
+                f"In a bad week (1 in 40) the loss could be about {rw['var5_pct']:.1f}%; in such weeks the average loss is about {rw['es5_pct']:.1f}%.</span>"
+                f"{unc}<div class='sub'>Based on the price of {rw['as_of_date']}. Risk is higher than on {rw['pct'] * 100:.0f}% of the past year's days.</div></div>"
+                if rw['pct'] is not None else
+                f"<div class='risk risk-{lvl.lower()}'><div class='head'>{head}</div>{meaning}<br>"
+                f"Chance of a big move in the next 5 days: <b>{rw['p_big5'] * 100:.0f}%</b> (usual: {rw['base5'] * 100:.0f}%).{unc}</div>",
+                unsafe_allow_html=True)
+            tst = rw.get('test') or {}
+            if tst:
+                skill = tst.get('high_precision_pct', 0) > (tst.get('event_rate_otherwise_pct') or 0)
+                st.markdown(
+                    f"**Is this warning reliable?** Tested on {tst['days']} days the models never learned from "
+                    f"({tst['first_day']} → {tst['last_day']}): HIGH or above was shown on **{tst['high_alarm_rate_pct']:.0f}%** of days. "
+                    + (f"After a HIGH warning, a big move followed **{tst['high_precision_pct']:.0f}%** of the time, against "
+                       f"{tst['event_rate_otherwise_pct']:.0f}% after other days — so it helps a little, but most warnings were false alarms."
+                       if skill and tst['high_alarm_rate_pct'] > 0 else
+                       f"It has **not** shown skill for {asset} in this test: big moves were not more common after its warnings.")
+                    + (" Its probability numbers were also less accurate than simply using the usual rate in this period."
+                       if (tst.get('brier_skill_pct') or 0) < 0 else ""))
+            vol = rk['volatility'] if rk else None
+            if vol:
+                st.caption(f"Expected typical daily move over the next 5 trading days: ±{vol['daily_vol_pct']:.2f}% (normal for {asset}: "
+                           f"±{vol['train_median_daily_vol_pct']:.2f}%). How the warning works and all test results: How Accurate Is It? tab.")
+            with st.expander("See the warning over the last 90 days"):
+                try:
+                    hwin = cached_warning_history(asset, _data_stamp(asset), 90)
+                except Exception as e:
+                    hwin = None
+                    st.caption(f"Not available ({e}).")
+                if hwin is not None and len(hwin):
+                    frk = go.Figure()
+                    lv_col = {'MODERATE': '#F1C40F', 'HIGH': RISK_HIGH, 'EXTREME': '#B71C1C'}
+                    for lv_name, col in lv_col.items():                 # shade the days at each warning level
+                        days_ = hwin.index[hwin['level'] == lv_name]
+                        for d_ in days_:
+                            frk.add_vrect(x0=d_ - pd.Timedelta(hours=12), x1=d_ + pd.Timedelta(hours=12), fillcolor=col, opacity=0.10, line_width=0)
+                    frk.add_trace(go.Scatter(x=hwin.index, y=hwin['p_big5'] * 100, mode='lines', name='chance of a big 5-day move (%)',
+                                             line=dict(color=ACCENT, width=2)))
+                    frk.add_trace(go.Scatter(x=hwin.index, y=hwin['base5'] * 100, mode='lines', name='usual chance (%)',
+                                             line=dict(color=NAIVE, width=1, dash='dot')))
+                    hit = hwin[hwin['e2'] == 1]
+                    frk.add_trace(go.Scatter(x=hit.index, y=hit['p_big5'] * 100, mode='markers', name='a big move really followed',
+                                             marker=dict(color='#FFFFFF', size=8, symbol='x')))
+                    frk.update_yaxes(ticksuffix='%', title_text='chance of a big 5-day move')
+                    frk.update_xaxes(title_text='date')
+                    st.plotly_chart(layout(frk, 330, "Chance of a big move, day by day"), use_container_width=True)
+                    cnt = hwin['level'].value_counts().reindex(['NORMAL', 'MODERATE', 'HIGH', 'EXTREME'], fill_value=0)
+                    known = hwin['e2'].notna()
+                    st.caption(f"**What this shows:** the blue line is our chance of a big move in the next 5 days, the dotted line the usual chance; "
+                               f"shading marks MODERATE (yellow), HIGH (red) and EXTREME (dark red) days; ✕ marks days after which a big move really "
+                               f"happened. Last 90 days: NORMAL {cnt['NORMAL']}, MODERATE {cnt['MODERATE']}, HIGH {cnt['HIGH']}, EXTREME {cnt['EXTREME']} days; "
+                               f"{int(hwin.loc[known, 'e2'].sum())} big moves among {int(known.sum())} days whose outcome is known. "
+                               "**What to take from it:** the warning measures how big moves may be, not their direction, and it cannot name the day.")
 
         # ── ④ how much to trust it
         section(4, "How much can you trust the forecast?", "How did the same method do on days the models never saw?")
@@ -454,7 +460,8 @@ with tab_fc:
             q3.metric("Price inside the likely range", f"{cov:.0f}%" if cov is not None else "—", help="Target: 68% (about 2 out of 3 days).")
             st.markdown(f"<div class='verdict'><b>In short:</b> the UP/DOWN guess is about as good as flipping a coin, and the price guess is "
                         f"{'better than' if beats else 'no better than'} simply saying \"tomorrow's price = today's price\". "
-                        "The likely range and the risk level <b>are</b> useful: they tell you how much the price could move.</div>",
+                        "The likely range <b>is</b> useful: the price landed inside it about as often as promised. The risk level in ③ "
+                        "helps only a little — see its test result there.</div>",
                         unsafe_allow_html=True)
             if pd.notna(comb_test.get('UpCalls_pct')) and comb_test['UpCalls_pct'] >= 80:
                 st.caption(f"Why the direction is weak for {asset}: the models said UP on {comb_test['UpCalls_pct']:.0f}% of test days, because "
@@ -846,6 +853,31 @@ with tab_perf:
                           "do not switch to a better-looking row, because it was not the method chosen in advance."
                           if vta['selected'].any() and float(vta[vta['selected']]['RMSE_vs_ref_pct_vs_persistence'].iloc[0]) >= 0 else ''))
 
+        ta_ = load_csv(os.path.join('risk_warning', 'test_alarms.csv'))
+        tp_ = load_csv(os.path.join('risk_warning', 'test_probability.csv'))
+        if ta_ is not None and tp_ is not None and len(ta_[ta_['asset'] == asset]):
+            st.subheader("3b · Risk warning — tested")
+            st.caption("Does the warning (Today tab, section ③) come before big moves? Rules were written down before testing "
+                       "(`results/risk_warning/PREREGISTRATION.md`); test = days after the models' tuning period.")
+            a_ = ta_[(ta_['asset'] == asset) & (ta_['event'] == 'E2')]
+            st.dataframe(pd.DataFrame({
+                'Warning': a_['alarm'], 'Shown on (% of days)': a_['alarm_rate_pct'].map(lambda v: f"{v:.0f}%"),
+                'Big moves in the test': a_['events'].astype(int),
+                'Big move followed a warning': a_['precision_pct'].map(lambda v: f"{v:.0f}%"),
+                'Big move followed other days': a_['event_rate_otherwise_pct'].map(lambda v: f"{v:.0f}%"),
+                'Big moves that were warned about': a_['recall_pct'].map(lambda v: f"{v:.0f}%"),
+                'False alarms (% of calm days)': a_['false_alarm_rate_pct'].map(lambda v: f"{v:.0f}%")}), width='stretch', hide_index=True)
+            p_ = tp_[(tp_['asset'] == asset) & (tp_['event'].str.startswith('E2'))]
+            st.dataframe(pd.DataFrame({
+                'Forecast of the chance of a big 5-day move': p_['forecast'], 'Average chance given': p_['mean_prob_pct'].map(lambda v: f"{v:.1f}%"),
+                'How often it happened': p_['event_rate_pct'].map(lambda v: f"{v:.1f}%"),
+                'Score vs the usual rate (higher is better)': p_['brier_skill_pct'].map(lambda v: f"{v:+.1f}%"),
+                'Ranking quality (AUC, 0.5 = none)': p_['auc'].map(lambda v: '—' if pd.isna(v) else f"{v:.2f}")}), width='stretch', hide_index=True)
+            st.caption("**Honest reading:** a 'big move' is a 5-day move larger than 2·√5 × the asset's typical daily move of the last 2 years. "
+                       "The score compares the probabilities with simply quoting the usual rate (Brier skill); negative means the warning's "
+                       "numbers were worse than the usual rate in this period. Full results, the 1-day loss (VaR / ES) tests and every "
+                       "historical fall are in `results/risk_warning/RESULTS.md`.")
+
         bc = load_csv('band_calibration.csv')
         if bc is not None and len(bc[bc['asset'] == asset]):
             st.subheader("4 · Likely price range — is it honest?")
@@ -1050,6 +1082,14 @@ in back-tests using a rule written down before the test (`results/volatility/PRE
 the app and was then checked once on the test days. The direction of daily moves is hard to predict, but calm and turbulent periods tend to
 last for a while, so the size of the moves *can* be forecast.
 
+**Risk warning (section ③ of the Today tab).** It answers "how likely is a big move in the next 5 days — up or down?", not "will
+the price fall?". A *big move* is a 5-day move larger than 2·√5 × the asset's typical daily move of the last 2 years. The chance is found by
+*filtered historical simulation*: today's expected size of moves × thousands of combinations of real past surprises (so rare, very large days are
+included). The levels follow fixed rules written down before testing: **EXTREME** chance ≥ 3× usual and risk in the top 5% of the past year;
+**HIGH** chance ≥ 2× usual or top 5%; **MODERATE** ≥ 1.25× usual or top 20%; otherwise **NORMAL**. **HIGH UNCERTAINTY** is added when the price
+broke the model's one-day range on 4 or more of the last 20 days (about 1 is normal). It also shows a *bad week* loss (97.5% Value at Risk) and the
+average loss in such weeks (Expected Shortfall). Its test results — including how often it was a false alarm — are on the How Accurate Is It? tab.
+
 **How results are measured.** Average and typical errors in dollars and in % (what a user sees) · errors and R² of the daily % change (what is
 actually forecast; R² shows how much of the move is explained) · how often the direction is right, with a p-value against a 50% coin flip,
 and how often the forecast says UP (to reveal the "always UP" effect) · a statistical test of the errors against the no-change guess
@@ -1068,7 +1108,9 @@ per trade) · how often the likely range contained the real price. The same test
            "market the direction is often wrong.\n" if _up else "")
         + (f"- **Short test period.** {min(_n)}–{max(_n)} test days, and we looked at them during development. The ~6-year back-tests "
            "and the newer days after the data was frozen give the same answer.\n" if all(_n) else "")
-        + "- **The risk forecast tells size, not direction.** Single shock days can be several times bigger than expected.\n"
+        + "- **The risk warning tells size, not direction, and it is weak.** In the 2026 test most HIGH warnings were false alarms; for the "
+        "metals its chances were too high, and for Bitcoin it showed no skill. It could not have warned before the slow gold and silver fall of "
+        "autumn 2026, because prices fell without unusually big daily moves.\n"
         "- **Free data.** Yahoo Finance prices; gold and silver follow a futures contract that is switched over time, so a few days can look odd.\n"
         "- **Not financial advice.** This is a university research project.")
     st.markdown("**The forecast shown — details**")

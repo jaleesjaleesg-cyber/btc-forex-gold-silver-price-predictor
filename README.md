@@ -88,8 +88,7 @@ and slightly worse QLIKE. EWMA stayed for Gold and Silver.
 The **Today** tab is one guided page; each numbered section answers one question, and the details sit in expandable sections:
 ① market snapshot (price, 3-month trend, typical daily move) · ② tomorrow's forecast (price, UP / DOWN, the 68 % likely range and a
 *signal strength* label: *weak* when the predicted move is below 0.25 × the typical daily move σ_t, a fixed rule of thumb) ·
-③ market risk — LOW / NORMAL / HIGH for the next 5 trading days from the served volatility forecast (thresholds fixed on the training
-period), with "did the warning work?" over the last 90 days (`src/inference/risk_view.py`) · ④ how much to trust it (direction hit-rate,
+③ market risk — the tested **risk warning** (see below) · ④ how much to trust it (direction hit-rate,
 comparison with "tomorrow = today", range coverage, with the full tables on request) · ⑤ the price chart with the forecast and its range.
 The other tabs are **Test a Past Day**, **How Accurate Is It?** (short answer first, full results for examiners in expandable sections)
 and **How It Works** (method and limitations). All text is plain English; technical terms are explained where they appear.
@@ -97,6 +96,26 @@ and **How It Works** (method and limitations). All text is plain English; techni
 During the September–November 2026 metals sell-off (gold −21 %, silver −38 % from their peaks), the return models still leaned UP on
 every day, but the risk banner was HIGH for gold and silver throughout, and all 5 of each metal's largest moves came on days flagged HIGH.
 For Bitcoin the warning did not flag its largest moves; the chart shows this too.
+
+### Risk warning — the size of coming moves, tested honestly
+
+`src/risk/warning.py`, `make risk-warning`, rules in `results/risk_warning/PREREGISTRATION.md` (written before any result), results in
+`results/risk_warning/RESULTS.md`. For each asset and day it estimates the chance of a **big 5-day move** (larger than 2·√5 × the asset's typical
+daily move of the last 2 years), the chance of a big **fall**, and the 97.5 % VaR / ES. It uses filtered historical simulation: the expected size of
+moves (EWMA for the metals, HAR for Bitcoin, chosen on walk-forward Brier score) × resampled real past shocks. Levels NORMAL / MODERATE / HIGH /
+EXTREME follow fixed rules relative to the usual rate and to the asset's own past year. "HIGH UNCERTAINTY" is added when the price broke the model's
+one-day range on ≥ 4 of the last 20 days. API: `GET /risk/{asset}`.
+
+Honest results on the test days (2026-02-18 → 2026-09-12, never used for choices):
+- **Metals:** HIGH or above was shown on 28–32 % of days; a big move followed 10–11 % of those days versus 6–7 % of the other days. Most warnings
+  were false alarms, and the probabilities were too high (Brier skill −16 to −17 % against the usual rate).
+- **Bitcoin:** no skill.
+- **VaR:** 1-day 97.5 % VaR passes the Kupiec test for all three assets.
+- **Slow falls are not caught:** on the live days after the frozen data the metals were mostly NORMAL — correct for the size of moves — so the slow
+  autumn-2026 metals decline was not flagged.
+
+This replaces the earlier LOW / NORMAL / HIGH risk level, whose thresholds came from 2018–2025: in 2026 it was HIGH on every metals day and
+never HIGH for Bitcoin.
 
 ## Project structure
 
@@ -128,7 +147,8 @@ For Bitcoin the warning did not flag its largest moves; the chart shows this too
 │   │   ├── cross_validation.py  expanding-window folds
 │   │   ├── backtesting.py       ONE evaluation on the test set (every model + the Combined forecast), CV comparison, pooled walk-forward tests, band calibration, results tables
 │   │   └── plots.py             report figures
-│   ├── inference/risk_view.py   risk banner, UP/DOWN signal strength, trend line, risk track record
+│   ├── inference/risk_view.py   UP/DOWN signal strength, trend line (+ the earlier risk level, kept for reference)
+│   ├── risk/                    tested risk warning: warning.py (engine) · evaluate_warnings.py (pre-registered backtest)
 │   ├── inference/prediction.py  next-day prediction (Combined = mean of all trained models, calibrated 68 % EWMA-volatility band), predict-for-date demo
 │   ├── api/app.py               FastAPI
 │   └── utils/                   metrics (DM test, directional accuracy, backtest), reconstruction, seeds, logging

@@ -1,4 +1,4 @@
-.PHONY: install test collect-data preprocess eda tune train stack evaluate volatility figures experiments fresh-holdout report pipeline serve api clean
+.PHONY: install test collect-data preprocess eda tune train stack evaluate volatility risk-warning figures experiments fresh-holdout report pipeline serve api clean
 
 PY ?= python
 
@@ -34,6 +34,9 @@ evaluate:                ## ONE evaluation on the untouched test set (+ the Comb
 volatility:              ## risk forecast (#1/#3) + band volatility (#2) under results/volatility/PREREGISTRATION.md (band part refits the 6 models per fold: ~10 min)
 	$(PY) src/volatility/evaluate.py
 
+risk-warning:            ## risk warning (size of moves, not direction) under results/risk_warning/PREREGISTRATION.md → RESULTS.md + data/models/*_risk_warning.json
+	$(PY) src/risk/evaluate_warnings.py
+
 figures:                 ## report figures into results/figures/
 	$(PY) src/evaluation/plots.py
 
@@ -49,7 +52,7 @@ fresh-holdout:           ## frozen models on the days published after the frozen
 report:                  ## rebuild docs/FYP_Technical_Report.pdf from the result files (needs data/processed and the trained models)
 	$(PY) docs/build_technical_report.py
 
-pipeline: preprocess eda tune train stack evaluate volatility figures experiments test   ## full reproducible run from raw data
+pipeline: preprocess eda tune train stack evaluate volatility risk-warning figures experiments test   ## full reproducible run from raw data
 
 predict:                 ## print today's combined next-day prediction for every asset (no logging)
 	$(PY) src/inference/prediction.py

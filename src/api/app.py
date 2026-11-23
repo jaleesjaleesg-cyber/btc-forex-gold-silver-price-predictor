@@ -8,6 +8,7 @@ FastAPI service exposing the served forecast per asset.
     GET /predict/{asset}              → next-day prediction, asset = bitcoin | gold | silver (default = Combined
                                         forecast of every trained model, with each member's own prediction)
     GET /predict/{asset}?model=GRU    → prediction with one specific trained model
+    GET /risk/{asset}                 → tested risk warning: level, chance of a big / falling 5-day move, VaR / ES, test record
 """
 import os
 import sys
@@ -99,3 +100,17 @@ def predict_asset(asset: str, model: Optional[str] = Query(None, description="On
         logger.exception(f"Error predicting {name}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@app.get("/risk/{asset}")
+def risk_asset(asset: str):
+    """Risk warning for the next 5 trading days: the SIZE of coming moves, never their direction (src/risk/warning.py)."""
+    name = _resolve(asset)
+    from src.risk.warning import risk_warning
+    from src.inference.prediction import load_features, DISCLAIMER
+    try:
+        return {**risk_warning(name, load_features(name)), 'disclaimer': DISCLAIMER}
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=503, detail=f"Risk-warning artefacts missing: {e}")
+    except Exception as e:
+        logger.exception(f"Error computing the risk warning for {name}")
+        raise HTTPException(status_code=500, detail=str(e))
